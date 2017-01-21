@@ -1,11 +1,14 @@
 import caffe
 import glog
 import sys
-from random import shuffle
+import random
 import cv2
 import numpy as np
+from proto_utils import proto_to_np
 import os.path as osp
 from transformer import Xformer
+from multiprocessing import Pool
+from threading import Thread
 from IPython.core.debugger import Tracer
 
 class MultiInputDataLayer(caffe.Layer):
@@ -18,13 +21,15 @@ class MultiInputDataLayer(caffe.Layer):
     self.check_params()
     self.batch_size = self.params['batch_size']
     self.thread_result = {}
+    self.thread = None
+    self.pool = Pool(processes=8)
 
     assert len(top) == len(self.params['top_names']),\
       "Number of tops does not match number of inputs"
 
     # fix the type of each input
     self.params['type'] = {}
-    for top_name, ip in self.params['input'].items():
+    for top_name, ip in self.params['source'].items():
       if ip.find('txt') >= 0:
         self.params['type'][top_name] = 'txt'
       elif ip.find('h5') >= 0:
@@ -32,17 +37,18 @@ class MultiInputDataLayer(caffe.Layer):
       else:
         glog.info("Wrong input type {:s}".format(ip))
         sys.exit(-1)
-    self.batch_loader = BatchLoader(self.params, self.thread_result)
+    self.batch_loader = BatchLoader(self.params, self.thread_result, self.pool)
 
     # reshape tops
     # load one batch to get shapes
-    self.batch_loader.load_batch()
+    self.dispatch_worker()
+    self.join_worker()
     for i, tn in enumerate(self.params['top_names']):
       data = self.thread_result[tn]
       assert data.shape[0] == self.batch_size,\
         '{:s}.shape[0] != batch size'.format(tn)
       top[i].reshape(*data.shape)
-    self.batch_loader.clear_counter()
+    self.batch_loader.clear_counters()
 
   def reshape(self, bottom, top):
     pass
@@ -51,23 +57,53 @@ class MultiInputDataLayer(caffe.Layer):
     pass
 
   def forward(self, bottom, top):
-    self.batch_loader.load_batch()
+    if self.thread is not None:
+      self.join_worker()
+
     for i, tn in enumerate(self.params['top_names']):
       data = self.thread_result[tn]
       top[i].data[...] = data
 
+    self.dispatch_worker()
+
   def check_params(self):
     pass
 
+  def dispatch_worker(self):
+    assert self.thread is None
+    self.thread = Thread(target=self.batch_loader.load_batch)
+    self.thread.start()
+
+  def join_worker(self):
+    assert self.thread is not None
+    self.thread.join()
+    self.thread = None
+
+class ImageProcessor:
+  def __init__(self, xform_object, phase, top_name=None):
+    self.xform_object = xform_object
+    self.phase = phase
+    self.top_name = top_name
+
+  def __call__(self, im_fn):
+    return im_load_preprocess(im_fn, self.xform_object, self.phase, self.top_name)
+
+def im_load_preprocess(im_fn, xform_object, phase, tn):
+  im = caffe.io.load_image(im_fn)
+  im_t = xform_object.preprocess(tn, im, phase)
+  return im_t
+
 class BatchLoader:
-  def __init__(self, params, result):
+  def __init__(self, params, result, pool):
     self.params = params
     self.result = result
-    self.counter = 0
+    self.pool = pool
     self.data = {}
     self.N = 0
     xformer_dict = {}
-    for tn, ip in self.params['input'].items():
+
+    # get data sources
+    for tn, ip in self.params['source'].items():
       if self.params['type'][tn] == 'txt':
         xformer_dict[tn] = (self.params['batch_size'], 3,
             self.params['new_height'][tn], self.params['new_width'][tn])
@@ -83,21 +119,36 @@ class BatchLoader:
       else:
         assert self.N == len(self.data[tn]),\
           "File {:s} does not have same # data points as others".format(ip)
+    glog.info('{:d} data points in all input files'.format(self.N))
 
-    self.order = [i for i in xrange(self.N)]
+    # RNGs and counters for shuffling
+    self.order = {tn: [i for i in xrange(self.N)] for tn in self.params['top_names']}
+    self.counter = {tn: 0 for tn in self.params['top_names']}
     if params['shuffle']:
-      shuffle(self.order)
+      self.rngs = {tn: random.Random() for tn in self.params['top_names']}
+      state = random.getstate()
+      for tn in self.params['top_names']:
+        self.rngs[tn].setstate(state)
+        self.rngs[tn].shuffle(self.order[tn])
+        glog.info('Shuffled order of data for top {:s}'.format(tn))
 
+    # set up image preprocessing objects
     self.xformer = Xformer(xformer_dict)
     for tn in self.params['top_names']:
       if self.params['type'][tn] is not 'txt':
         continue
-      self.xformer.set_crop_dim(tn, self.params['crop_dim'][tn])
+      im_mean = proto_to_np(self.params['mean_file'][tn])
+      self.xformer.set_mean(tn, im_mean[0, :])
+      self.xformer.set_crop_size(tn, self.params['crop_size'][tn])
       self.xformer.set_transpose(tn, (2, 0, 1))
-      # TODO: set mean and other things
+      # because we load image from skimage and not opencv
+      self.xformer.set_raw_scale(tn, 255)
+      self.xformer.set_channel_swap(tn, (2, 1, 0))
 
-  def clear_counter(self):
-    self.counter = 0
+    self.image_processor = ImageProcessor(self.xformer, self.params['phase'])
+
+  def clear_counters(self):
+    self.counter = {tn: 0 for tn in self.params['top_names']}
 
   def load_batch(self):
     for tn in self.params['top_names']:
@@ -106,24 +157,21 @@ class BatchLoader:
       elif self.params['type'][tn] == 'h5':
         self.result[tn] = self.load_from_h5(tn, self.data[tn])
 
-  def load_from_txt(self, top_name, data_src):
-    data = np.array([])
+  def load_from_txt(self, tn, data_src):
+    im_fns = []
     for i in xrange(self.params['batch_size']):
-      im_fn = data_src[self.order[self.counter]]
-      im = cv2.imread(im_fn)
-      self.counter += 1
-      if im is not None:
-        im_t = self.xformer.preprocess(top_name, im, self.params['phase'])
-        data = np.concatenate((data, im_t[np.newaxis, :])) if data.size is not 0 else im_t[np.newaxis, :]
-        if self.counter == self.N:
-          self.counter = 0
-          if self.params['shuffle']:
-            shuffle(self.order)
-            glog.info('Epoch finished, shuffling again')
-      else:
-        glog.info('Could not read {:s}'.format(im_fn))
+      im_fns.append(data_src[self.order[tn][self.counter[tn]]])
+      self.counter[tn] += 1
+      if self.counter[tn] == self.N:
+        self.counter[tn] = 0
+        if self.params['shuffle']:
+          self.rngs[tn].shuffle(self.order[tn])
+          glog.info('Epoch finished, shuffled source for {:s} again'.format(tn))
+    self.image_processor.top_name = tn
+    data = self.pool.map(self.image_processor, im_fns)
+    data = np.asarray(data)
     return data
 
-  def load_from_h5(self, top_name, data_src):
+  def load_from_h5(self, tn, data_src):
     glog.info('Not implemented')
     return None

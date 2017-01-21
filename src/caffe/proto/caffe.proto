@@ -1117,6 +1117,7 @@ message SliceParameter {
 }
 
 // Message that stores parameters used by SoftmaxLayer, SoftmaxWithLossLayer
+// and SoftmaxWeightedLossLayer
 message SoftmaxParameter {
   enum Engine {
     DEFAULT = 0;

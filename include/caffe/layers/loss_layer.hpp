@@ -29,7 +29,8 @@ class LossLayer : public Layer<Dtype> {
   virtual void Reshape(
       const vector<Blob<Dtype>*>& bottom, const vector<Blob<Dtype>*>& top);
 
-  virtual inline int ExactNumBottomBlobs() const { return 2; }
+  virtual inline int MinBottomBlobs() const { return 2; }
+  virtual inline int MaxBottomBlobs() const { return 3; }
 
   /**
    * @brief For convenience and backwards compatibility, instruct the Net to
