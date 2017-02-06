@@ -2,8 +2,8 @@ import caffe
 import glog
 import sys
 import random
-import cv2
 import numpy as np
+import h5py
 from proto_utils import proto_to_np
 import os.path as osp
 from transformer import Xformer
@@ -18,7 +18,6 @@ class MultiInputDataLayer(caffe.Layer):
   def setup(self, bottom, top):
     self.params = eval(self.param_str)
     self.params['phase'] = self.phase
-    self.check_params()
     self.batch_size = self.params['batch_size']
     self.thread_result = {}
     self.thread = None
@@ -66,9 +65,6 @@ class MultiInputDataLayer(caffe.Layer):
 
     self.dispatch_worker()
 
-  def check_params(self):
-    pass
-
   def dispatch_worker(self):
     assert self.thread is None
     self.thread = Thread(target=self.batch_loader.load_batch)
@@ -110,9 +106,12 @@ class BatchLoader:
         root_folder = self.params['root_folder'][tn]
         with open(ip, 'r') as f:
           im_names = [l.rstrip().split(' ')[0] for l in f]
-          self.data[tn] = [osp.join(root_folder, im_name) for im_name in im_names] 
+          self.data[tn] = [osp.join(root_folder, im_name) for im_name in im_names]
+          print 'Read {:d} image names from {:s}'.format(len(self.data[tn]), ip)
       elif self.params['type'][tn] == 'h5':
-        self.data[top_name] = None
+        with h5py.File(ip, 'r') as f:
+          self.data[tn] = f[f.keys()[0]]
+          print 'Got dataset of shape', self.data[tn].shape, ' from', ip
 
       if self.N == 0:
         self.N = len(self.data[tn])
@@ -173,5 +172,13 @@ class BatchLoader:
     return data
 
   def load_from_h5(self, tn, data_src):
-    glog.info('Not implemented')
-    return None
+    data = np.zeros((self.params['batch_size'],)+data_src.shape[1:], dtype=np.float32)
+    for i in xrange(self.params['batch_size']):
+      idx = self.order[tn][self.counter[tn]]
+      data[i, :] = data_src[idx]
+      self.counter[tn] += 1
+      if self.counter[tn] == self.N:
+        self.counter[tn] = 0
+        if self.params['shuffle']:
+          self.rngs[tn].shuffle(self.order[tn])
+    return data
