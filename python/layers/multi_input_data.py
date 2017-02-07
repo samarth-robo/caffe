@@ -36,6 +36,7 @@ class MultiInputDataLayer(caffe.Layer):
       else:
         glog.info("Wrong input type {:s}".format(ip))
         sys.exit(-1)
+    
     self.batch_loader = BatchLoader(self.params, self.thread_result, self.pool)
 
     # reshape tops
@@ -75,6 +76,10 @@ class MultiInputDataLayer(caffe.Layer):
     self.thread.join()
     self.thread = None
 
+  def __del__(self):
+    print 'Reached python layer destructor'
+    self.batch_loader.__del__()
+
 class ImageProcessor:
   def __init__(self, xform_object, phase, top_name=None):
     self.xform_object = xform_object
@@ -95,6 +100,7 @@ class BatchLoader:
     self.result = result
     self.pool = pool
     self.data = {}
+    self.h5_files = {}
     self.N = 0
     xformer_dict = {}
 
@@ -103,20 +109,23 @@ class BatchLoader:
       if self.params['type'][tn] == 'txt':
         xformer_dict[tn] = (self.params['batch_size'], 3,
             self.params['new_height'][tn], self.params['new_width'][tn])
-        root_folder = self.params['root_folder'][tn]
-        with open(ip, 'r') as f:
+        root_folder = osp.expanduser(self.params['root_folder'][tn])
+        with open(osp.expanduser(ip), 'r') as f:
           im_names = [l.rstrip().split(' ')[0] for l in f]
           self.data[tn] = [osp.join(root_folder, im_name) for im_name in im_names]
           print 'Read {:d} image names from {:s}'.format(len(self.data[tn]), ip)
+        data_len = len(self.data[tn])
       elif self.params['type'][tn] == 'h5':
-        with h5py.File(ip, 'r') as f:
-          self.data[tn] = f[f.keys()[0]]
-          print 'Got dataset of shape', self.data[tn].shape, ' from', ip
+        f = h5py.File(osp.expanduser(ip), 'r')
+        self.h5_files[tn] = f
+        self.data[tn] = f[f.keys()[0]]
+        print 'Got dataset of shape', self.data[tn].shape, ' from', ip
+        data_len = self.data[tn].shape[0]
 
       if self.N == 0:
-        self.N = len(self.data[tn])
+        self.N = data_len
       else:
-        assert self.N == len(self.data[tn]),\
+        assert self.N == data_len,\
           "File {:s} does not have same # data points as others".format(ip)
     glog.info('{:d} data points in all input files'.format(self.N))
 
@@ -136,7 +145,7 @@ class BatchLoader:
     for tn in self.params['top_names']:
       if self.params['type'][tn] is not 'txt':
         continue
-      im_mean = proto_to_np(self.params['mean_file'][tn])
+      im_mean = proto_to_np(osp.expanduser(self.params['mean_file'][tn]))
       self.xformer.set_mean(tn, im_mean[0, :])
       self.xformer.set_crop_size(tn, self.params['crop_size'][tn])
       self.xformer.set_transpose(tn, (2, 0, 1))
@@ -145,6 +154,11 @@ class BatchLoader:
       self.xformer.set_channel_swap(tn, (2, 1, 0))
 
     self.image_processor = ImageProcessor(self.xformer, self.params['phase'])
+
+  def __del__(self):
+    print 'Reached destructor'
+    for _, f in self.h5_files.items():
+      f.close()
 
   def clear_counters(self):
     self.counter = {tn: 0 for tn in self.params['top_names']}
