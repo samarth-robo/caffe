@@ -4,6 +4,7 @@ import sys
 import random
 import numpy as np
 import h5py
+import json
 from proto_utils import proto_to_np
 import os.path as osp
 from transformer import Xformer
@@ -16,7 +17,7 @@ class MultiInputDataLayer(caffe.Layer):
   A data layer that has multiple inputs (.txt, .h5) and shuffles them in sync
   """
   def setup(self, bottom, top):
-    self.params = eval(self.param_str)
+    self.params = json.loads(self.param_str)
     self.params['phase'] = self.phase
     self.batch_size = self.params['batch_size']
     self.thread_result = {}
