@@ -22,7 +22,7 @@ class Xformer(caffe.io.Transformer):
       y = random.randint(0, h-self.crop_size[in_])
       x = random.randint(0, w-self.crop_size[in_])
     else:  # center crop
-      y = int((h - self.crop_size[in_][2]) / 2.0)
-      x = int((w - self.crop_size[in_][3]) / 2.0)
+      y = int((h - self.crop_size[in_]) / 2.0)
+      x = int((w - self.crop_size[in_]) / 2.0)
     caffe_in = caffe_in[:, y:y+self.crop_size[in_], x:x+self.crop_size[in_]]
     return caffe_in

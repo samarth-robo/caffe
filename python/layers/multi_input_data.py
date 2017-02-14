@@ -22,7 +22,10 @@ class MultiInputDataLayer(caffe.Layer):
     self.batch_size = self.params['batch_size']
     self.thread_result = {}
     self.thread = None
-    self.pool = Pool(processes=8)
+    if self.params['multithreaded_preprocess']:
+      self.pool = Pool(processes=8)
+    else:
+      self.pool = None
 
     assert len(top) == len(self.params['top_names']),\
       "Number of tops does not match number of inputs"
@@ -42,14 +45,28 @@ class MultiInputDataLayer(caffe.Layer):
 
     # reshape tops
     # load one batch to get shapes
-    self.dispatch_worker()
-    self.join_worker()
+    if self.params['multithreaded_prefetch']:
+      self.dispatch_worker_multi_threaded()
+      self.join_worker()
+    else:
+      self.dispatch_worker_single_threaded()
+
     for i, tn in enumerate(self.params['top_names']):
       data = self.thread_result[tn]
       assert data.shape[0] == self.batch_size,\
         '{:s}.shape[0] != batch size'.format(tn)
       top[i].reshape(*data.shape)
     self.batch_loader.clear_counters()
+
+    if self.params['multithreaded_prefetch']:
+      glog.info('Multi-threaded prefetch')
+    else:
+      glog.info('Single-threaded prefetch')
+
+    if self.params['multithreaded_preprocess']:
+      glog.info('Multi-threaded preprocess')
+    else:
+      glog.info('Single-threaded preprocess')
 
   def reshape(self, bottom, top):
     pass
@@ -58,19 +75,26 @@ class MultiInputDataLayer(caffe.Layer):
     pass
 
   def forward(self, bottom, top):
-    if self.thread is not None:
-      self.join_worker()
+    if self.params['multithreaded_prefetch']:
+      if self.thread is not None:
+        self.join_worker()
 
     for i, tn in enumerate(self.params['top_names']):
       data = self.thread_result[tn]
       top[i].data[...] = data
 
-    self.dispatch_worker()
+    if self.params['multithreaded_prefetch']:
+      self.dispatch_worker_multi_threaded()
+    else:
+      self.dispatch_worker_single_threaded()
 
-  def dispatch_worker(self):
+  def dispatch_worker_multi_threaded(self):
     assert self.thread is None
     self.thread = Thread(target=self.batch_loader.load_batch)
     self.thread.start()
+
+  def dispatch_worker_single_threaded(self):
+    self.batch_loader.load_batch()
 
   def join_worker(self):
     assert self.thread is not None
@@ -78,7 +102,7 @@ class MultiInputDataLayer(caffe.Layer):
     self.thread = None
 
   def __del__(self):
-    print 'Reached python layer destructor'
+    glog.info('Reached python layer destructor')
     self.batch_loader.__del__()
 
 class ImageProcessor:
@@ -114,13 +138,14 @@ class BatchLoader:
         with open(osp.expanduser(ip), 'r') as f:
           im_names = [l.rstrip().split(' ')[0] for l in f]
           self.data[tn] = [osp.join(root_folder, im_name) for im_name in im_names]
-          print 'Read {:d} image names from {:s}'.format(len(self.data[tn]), ip)
+          glog.info('Read {:d} image names from {:s}'.format(len(self.data[tn]),
+            ip))
         data_len = len(self.data[tn])
       elif self.params['type'][tn] == 'h5':
         f = h5py.File(osp.expanduser(ip), 'r')
         self.h5_files[tn] = f
         self.data[tn] = f[f.keys()[0]]
-        print 'Got dataset of shape', self.data[tn].shape, ' from', ip
+        glog.info('Got dataset of shape', self.data[tn].shape, ' from', ip)
         data_len = self.data[tn].shape[0]
 
       if self.N == 0:
@@ -157,7 +182,7 @@ class BatchLoader:
     self.image_processor = ImageProcessor(self.xformer, self.params['phase'])
 
   def __del__(self):
-    print 'Reached destructor'
+    glog.info('Reached destructor')
     for _, f in self.h5_files.items():
       f.close()
 
@@ -182,7 +207,10 @@ class BatchLoader:
           self.rngs[tn].shuffle(self.order[tn])
           glog.info('Epoch finished, shuffled source for {:s} again'.format(tn))
     self.image_processor.top_name = tn
-    data = self.pool.map(self.image_processor, im_fns)
+    if self.params['multithreaded_preprocess']:
+      data = self.pool.map(self.image_processor, im_fns)
+    else:
+      data = map(self.image_processor, im_fns)
     data = np.asarray(data)
     return data
 
