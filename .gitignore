@@ -99,4 +99,6 @@ docs/dev
 LOCK
 LOG*
 CURRENT
+
+*.pyo
 MANIFEST-*

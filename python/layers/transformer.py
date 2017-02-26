@@ -9,9 +9,9 @@ class Xformer(caffe.io.Transformer):
 
   def set_crop_size(self, in_, crop_size):
     caffe.io.Transformer._Transformer__check_input(self, in_)
-    assert crop_size < self.inputs[in_][2],\
+    assert crop_size <= self.inputs[in_][2],\
       'crop_size should be less than inputs[in_] height'
-    assert crop_size < self.inputs[in_][3], \
+    assert crop_size <= self.inputs[in_][3], \
       'crop_size should be less than inputs[in_] width'
     self.crop_size[in_] = crop_size
 

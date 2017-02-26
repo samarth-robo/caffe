@@ -157,7 +157,7 @@ class BatchLoader:
 
     # RNGs and counters for shuffling
     self.order = {tn: [i for i in xrange(self.N)] for tn in self.params['top_names']}
-    self.counter = {tn: 0 for tn in self.params['top_names']}
+    self.counter = {tn: caffe.solver_rank() for tn in self.params['top_names']}
     if params['shuffle']:
       self.rngs = {tn: random.Random() for tn in self.params['top_names']}
       state = random.getstate()
@@ -187,7 +187,7 @@ class BatchLoader:
       f.close()
 
   def clear_counters(self):
-    self.counter = {tn: 0 for tn in self.params['top_names']}
+    self.counter = {tn: caffe.solver_rank() for tn in self.params['top_names']}
 
   def load_batch(self):
     for tn in self.params['top_names']:
@@ -200,9 +200,9 @@ class BatchLoader:
     im_fns = []
     for i in xrange(self.params['batch_size']):
       im_fns.append(data_src[self.order[tn][self.counter[tn]]])
-      self.counter[tn] += 1
-      if self.counter[tn] == self.N:
-        self.counter[tn] = 0
+      self.counter[tn] += caffe.solver_count()
+      if self.counter[tn] >= self.N:
+        self.counter[tn] = caffe.solver_rank()
         if self.params['shuffle']:
           self.rngs[tn].shuffle(self.order[tn])
           glog.info('Epoch finished, shuffled source for {:s} again'.format(tn))
@@ -219,9 +219,9 @@ class BatchLoader:
     for i in xrange(self.params['batch_size']):
       idx = self.order[tn][self.counter[tn]]
       data[i, :] = data_src[idx]
-      self.counter[tn] += 1
-      if self.counter[tn] == self.N:
-        self.counter[tn] = 0
+      self.counter[tn] += caffe.solver_count()
+      if self.counter[tn] >= self.N:
+        self.counter[tn] = caffe.solver_rank()
         if self.params['shuffle']:
           self.rngs[tn].shuffle(self.order[tn])
     return data
