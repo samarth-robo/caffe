@@ -145,7 +145,7 @@ class BatchLoader:
         f = h5py.File(osp.expanduser(ip), 'r')
         self.h5_files[tn] = f
         self.data[tn] = f[f.keys()[0]]
-        glog.info('Got dataset of shape', self.data[tn].shape, ' from', ip)
+        glog.info('Got dataset of shape {:s} from {:s}'.format(str(self.data[tn].shape), ip))
         data_len = self.data[tn].shape[0]
 
       if self.N == 0:
